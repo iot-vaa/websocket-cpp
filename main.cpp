@@ -1,106 +1,59 @@
-#include <stdio.h>
-#include <string.h>
-#include <unistd.h>
-#include <curl/curl.h>
+#include <websocketpp/client.hpp>
+#include <websocketpp/config/asio_no_tls_client.hpp>
+
 #include <iostream>
- 
-static int ping(CURL *curl, const char *send_payload)
+
+typedef websocketpp::client<websocketpp::config::asio_client> client;
+
+void on_message(websocketpp::connection_hdl, client::message_ptr msg)
 {
-  size_t sent;
-  CURLcode result =
-    curl_ws_send(curl, send_payload, strlen(send_payload), &sent, 0,
-                 CURLWS_PING);
-  return (int)result;
+  std::cout << msg->get_payload() << std::endl;
 }
- 
-static int recv_pong(CURL *curl, const char *expected_payload)
+
+int main(int argc, char *argv[])
 {
-  size_t rlen;
-  const struct curl_ws_frame *meta;
-  char buffer[256];
-  CURLcode result = curl_ws_recv(curl, buffer, sizeof(buffer), &rlen, &meta);
-  if(!result) {
-    if(meta->flags & CURLWS_PONG) {
-      int same = 0;
-      fprintf(stderr, "ws: got PONG back\n");
-      if(rlen == strlen(expected_payload)) {
-        if(!memcmp(expected_payload, buffer, rlen)) {
-          fprintf(stderr, "ws: got the same payload back\n");
-          same = 1;
-        }
-      }
-      if(!same)
-        fprintf(stderr, "ws: did NOT get the same payload back\n");
-    }
-    else {
-      fprintf(stderr, "recv_pong: got %u bytes rflags %x\n", (int)rlen,
-              meta->flags);
-    }
+  client c;
+
+  std::string uri = "ws://localhost:8080";
+
+  if (argc == 2)
+  {
+    uri = argv[1];
   }
-  fprintf(stderr, "ws: curl_ws_recv returned %u, received %u\n",
-          (unsigned int)result, (unsigned int)rlen);
-  return (int)result;
-}
- 
-static int recv_any(CURL *curl)
-{
-  size_t rlen;
-  const struct curl_ws_frame *meta;
-  char buffer[256];
-  CURLcode result = curl_ws_recv(curl, buffer, sizeof(buffer), &rlen, &meta);
-  if(result)
-    return result;
- 
-  return 0;
-}
- 
-/* close the connection */
-static void websocket_close(CURL *curl)
-{
-  size_t sent;
-  (void)curl_ws_send(curl, "", 0, &sent, 0, CURLWS_CLOSE);
-}
- 
-static void websocket(CURL *curl)
-{
-  int i = 0;
-  do {
-    recv_any(curl);
-    if(ping(curl, "foobar"))
-      return;
-    if(recv_pong(curl, "foobar")) {
-      return;
+
+  try
+  {
+    // Set logging to be pretty verbose (everything except message payloads)
+    c.set_access_channels(websocketpp::log::alevel::all);
+    c.clear_access_channels(websocketpp::log::alevel::frame_payload);
+    c.set_error_channels(websocketpp::log::elevel::all);
+
+    // Initialize ASIO
+    c.init_asio();
+
+    // Register our message handler
+    c.set_message_handler(&on_message);
+
+    websocketpp::lib::error_code ec;
+    client::connection_ptr con = c.get_connection(uri, ec);
+    if (ec)
+    {
+      std::cout << "could not create connection because: " << ec.message() << std::endl;
+      return 0;
     }
-    sleep(2);
-  } while(i++ < 10);
-  websocket_close(curl);
-}
- 
-int main(void)
-{
-  CURL *curl;
-  CURLcode res;
- 
-  curl = curl_easy_init();
-  if(curl) {
-    curl_easy_setopt(curl, CURLOPT_URL, "ws://localhost:8080");
- 
-    curl_easy_setopt(curl, CURLOPT_CONNECT_ONLY, 2L); /* websocket style */
- 
-    /* Perform the request, res gets the return code */
-    res = curl_easy_perform(curl);
-    /* Check for errors */
-    if(res != CURLE_OK)
-      fprintf(stderr, "curl_easy_perform() failed: %s\n",
-              curl_easy_strerror(res));
-    else {
-      /* connected and ready */
-      std::cout << "cho cho bin";
-      websocket(curl);
-    }
- 
-    /* always cleanup */
-    curl_easy_cleanup(curl);
+
+    // Note that connect here only requests a connection. No network messages are
+    // exchanged until the event loop starts running in the next line.
+    c.connect(con);
+
+    // Start the ASIO io_service run loop
+    // this will cause a single connection to be made to the server. c.run()
+    // will exit when this connection is closed.
+    c.run();
   }
-  return 0;
+  catch (websocketpp::exception const &e)
+  {
+    std::cout << e.what() << std::endl;
+  }
 }
+
